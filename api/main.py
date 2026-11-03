@@ -12,9 +12,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 
-# --------------------------------------------------
+# ==================================================
 # CONFIGURATION
-# --------------------------------------------------
+# ==================================================
 
 FRONTEND_URL = os.getenv(
     "FRONTEND_URL",
@@ -36,16 +36,16 @@ DISCORD_CLIENT_SECRET = os.getenv("DISCORD_CLIENT_SECRET", "")
 DISCORD_REDIRECT_URI = os.getenv("DISCORD_REDIRECT_URI", "")
 
 
-# --------------------------------------------------
-# FASTAPI APP
-# --------------------------------------------------
+# ==================================================
+# FASTAPI APPLICATION
+# ==================================================
 
 app = FastAPI(title="SmartModmail API")
 
 
-# --------------------------------------------------
-# CORS CONFIGURATION
-# --------------------------------------------------
+# ==================================================
+# CORS
+# ==================================================
 
 ALLOWED_ORIGINS = list(set([
     "https://sigmapaulalt.github.io",
@@ -61,9 +61,9 @@ app.add_middleware(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # DATABASE
-# --------------------------------------------------
+# ==================================================
 
 mongo = None
 db = None
@@ -104,22 +104,9 @@ async def shutdown():
         mongo.close()
 
 
-# --------------------------------------------------
-# HEALTH CHECK
-# --------------------------------------------------
-
-@app.get("/health")
-async def health():
-    return {
-        "ok": True,
-        "service": "smartmodmail-api",
-        "mongodb_configured": bool(MONGODB_URI)
-    }
-
-
-# --------------------------------------------------
-# CONFIGURATION CHECK
-# --------------------------------------------------
+# ==================================================
+# CONFIGURATION VALIDATION
+# ==================================================
 
 def configured():
     required = {
@@ -137,20 +124,34 @@ def configured():
 
     if missing:
         raise HTTPException(
-            503,
-            "Missing environment variables: " + ", ".join(missing)
+            status_code=503,
+            detail="Missing environment variables: "
+            + ", ".join(missing)
         )
 
     if db is None:
         raise HTTPException(
-            503,
-            "MongoDB is not connected"
+            status_code=503,
+            detail="MongoDB is not connected."
         )
 
 
-# --------------------------------------------------
+# ==================================================
+# HEALTH CHECK
+# ==================================================
+
+@app.get("/health")
+async def health():
+    return {
+        "ok": True,
+        "service": "smartmodmail-api",
+        "mongodb_configured": bool(MONGODB_URI)
+    }
+
+
+# ==================================================
 # DISCORD LOGIN
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/auth/login")
 async def auth_login():
@@ -168,14 +169,17 @@ async def auth_login():
         "state": state
     })
 
-    return RedirectResponse(
-        "https://discord.com/oauth2/authorize?" + query
+    discord_url = (
+        "https://discord.com/oauth2/authorize?"
+        + query
     )
 
+    return RedirectResponse(discord_url)
 
-# --------------------------------------------------
+
+# ==================================================
 # DISCORD OAUTH CALLBACK
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/auth/callback")
 async def auth_callback(
@@ -186,8 +190,8 @@ async def auth_callback(
 
     if not code or not state:
         raise HTTPException(
-            400,
-            "Missing OAuth code or state."
+            status_code=400,
+            detail="Missing OAuth code or state."
         )
 
     try:
@@ -195,13 +199,13 @@ async def auth_callback(
 
     except (BadSignature, SignatureExpired):
         raise HTTPException(
-            400,
-            "Invalid or expired OAuth state."
+            status_code=400,
+            detail="Invalid or expired OAuth state."
         )
 
     async with httpx.AsyncClient(timeout=20) as client:
 
-        token_res = await client.post(
+        token_response = await client.post(
             "https://discord.com/api/oauth2/token",
             data={
                 "client_id": DISCORD_CLIENT_ID,
@@ -215,33 +219,35 @@ async def auth_callback(
             }
         )
 
-        if token_res.status_code != 200:
+        if token_response.status_code != 200:
             raise HTTPException(
-                400,
-                "Discord token exchange failed."
+                status_code=400,
+                detail="Discord token exchange failed."
             )
 
-        token_data = token_res.json()
+        token_data = token_response.json()
 
-        me_res = await client.get(
+        user_response = await client.get(
             "https://discord.com/api/users/@me",
             headers={
-                "Authorization": "Bearer " + token_data["access_token"]
+                "Authorization": (
+                    "Bearer " + token_data["access_token"]
+                )
             }
         )
 
-        if me_res.status_code != 200:
+        if user_response.status_code != 200:
             raise HTTPException(
-                400,
-                "Could not retrieve Discord profile."
+                status_code=400,
+                detail="Could not retrieve Discord profile."
             )
 
-        user = me_res.json()
+        user = user_response.json()
 
-    one_time = secrets.token_urlsafe(32)
+    login_code = secrets.token_urlsafe(32)
 
     await db.login_codes.insert_one({
-        "_id": one_time,
+        "_id": login_code,
         "user": {
             "id": user["id"],
             "username": user.get("username"),
@@ -250,47 +256,67 @@ async def auth_callback(
         },
         "access_token": token_data["access_token"],
         "expires_at": (
-            datetime.now(timezone.utc) +
-            timedelta(minutes=2)
+            datetime.now(timezone.utc)
+            + timedelta(minutes=2)
         )
     })
 
     return RedirectResponse(
-        FRONTEND_URL + "?login_code=" + one_time
+        FRONTEND_URL + "?login_code=" + login_code
     )
 
 
-# --------------------------------------------------
+# ==================================================
 # EXCHANGE LOGIN CODE FOR SESSION
-# --------------------------------------------------
+# ==================================================
 
 @app.post("/auth/exchange")
 async def exchange(request: Request):
     configured()
 
-    body = await request.json()
-
-    code = body.get("code")
-
-    if not code:
+    try:
+        body = await request.json()
+    except Exception:
         raise HTTPException(
-            400,
-            "Missing login code."
+            status_code=400,
+            detail="Invalid JSON request."
         )
 
+    login_code = body.get("code")
+
+    if not login_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing login code."
+        )
+
+    # Login codes can only be used once.
     record = await db.login_codes.find_one_and_delete({
-        "_id": code
+        "_id": login_code
     })
 
-    if (
-        not record or
-        record["expires_at"] < datetime.now(timezone.utc)
-    ):
+    if not record:
         raise HTTPException(
-            400,
-            "Login code is invalid or expired."
+            status_code=400,
+            detail="Login code is invalid or expired."
         )
 
+    # MongoDB commonly returns timezone-naive datetimes.
+    # Convert to UTC before comparing.
+    expires_at = record["expires_at"]
+
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(
+            tzinfo=timezone.utc
+        )
+
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Login code is invalid or expired."
+        )
+
+    # Create dashboard session.
     session_token = secrets.token_urlsafe(48)
 
     await db.sessions.insert_one({
@@ -298,8 +324,8 @@ async def exchange(request: Request):
         "user": record["user"],
         "access_token": record["access_token"],
         "expires_at": (
-            datetime.now(timezone.utc) +
-            timedelta(days=7)
+            datetime.now(timezone.utc)
+            + timedelta(days=7)
         )
     })
 
@@ -309,19 +335,23 @@ async def exchange(request: Request):
     }
 
 
-# --------------------------------------------------
+# ==================================================
 # SESSION AUTHENTICATION
-# --------------------------------------------------
+# ==================================================
 
 async def session_for(request: Request):
-    bearer = request.headers.get("Authorization", "")
+    authorization = request.headers.get(
+        "Authorization", ""
+    )
 
-    token = bearer.removeprefix("Bearer ").strip()
+    token = authorization.removeprefix(
+        "Bearer "
+    ).strip()
 
     if not token or db is None:
         raise HTTPException(
-            401,
-            "Not authenticated."
+            status_code=401,
+            detail="Not authenticated."
         )
 
     session = await db.sessions.find_one({
@@ -333,16 +363,16 @@ async def session_for(request: Request):
 
     if not session:
         raise HTTPException(
-            401,
-            "Session expired. Sign in again."
+            status_code=401,
+            detail="Session expired. Sign in again."
         )
 
     return session
 
 
-# --------------------------------------------------
+# ==================================================
 # CURRENT USER
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/api/me")
 async def me(request: Request):
@@ -353,10 +383,10 @@ async def me(request: Request):
     }
 
 
-# --------------------------------------------------
+# ==================================================
 # DISCORD SERVERS
-# OWNERS ONLY
-# --------------------------------------------------
+# ONLY ACTUAL OWNERS
+# ==================================================
 
 @app.get("/api/guilds")
 async def guilds(request: Request):
@@ -375,34 +405,38 @@ async def guilds(request: Request):
 
     if response.status_code != 200:
         raise HTTPException(
-            502,
-            "Discord server lookup failed."
+            status_code=502,
+            detail="Discord server lookup failed."
         )
 
-    # Only actual server owners are included.
+    # Only actual owners are included.
     # Administrator and Manage Server permissions
     # do not count as ownership.
 
-    owned = [
+    owned_guilds = [
         guild
         for guild in response.json()
         if guild.get("owner") is True
     ]
 
     return {
-        "guilds": owned
+        "guilds": owned_guilds
     }
 
 
-# --------------------------------------------------
+# ==================================================
 # LOGOUT
-# --------------------------------------------------
+# ==================================================
 
 @app.post("/auth/logout")
 async def logout(request: Request):
-    token = request.headers.get(
+    authorization = request.headers.get(
         "Authorization", ""
-    ).removeprefix("Bearer ").strip()
+    )
+
+    token = authorization.removeprefix(
+        "Bearer "
+    ).strip()
 
     if token and db is not None:
         await db.sessions.delete_one({
@@ -414,9 +448,9 @@ async def logout(request: Request):
     }
 
 
-# --------------------------------------------------
+# ==================================================
 # CONFIGURATION PLACEHOLDER
-# --------------------------------------------------
+# ==================================================
 
 @app.get("/api/config/{guild_id}")
 async def config_not_integrated(
@@ -426,8 +460,10 @@ async def config_not_integrated(
     await session_for(request)
 
     raise HTTPException(
-        501,
-        "Bot configuration is not integrated yet. "
-        "Connect the bot's real MongoDB schema and "
-        "reload mechanism before saving settings."
+        status_code=501,
+        detail=(
+            "Bot configuration is not integrated yet. "
+            "The bot's MongoDB schema and reload mechanism "
+            "must be connected before settings can be saved."
+        )
     )
