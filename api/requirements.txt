@@ -1,0 +1,5 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+httpx>=0.28,<1
+motor>=3.7,<4
+itsdangerous>=2.2,<3
