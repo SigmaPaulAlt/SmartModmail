@@ -163,6 +163,8 @@ async def lifespan(_app):
         await db.dashboard_instances.create_index([('guild_id', 1), ('kind', 1)])
         await db.dashboard_changes.create_index('expires_at', expireAfterSeconds=0)
         await db.dashboard_changes.create_index([('guild_id', 1), ('status', 1), ('created_at', 1)])
+        await db.dashboard_instance_commands.create_index([('guild_id', 1), ('status', 1), ('created_at', 1)])
+        await db.dashboard_instance_commands.create_index('expires_at', expireAfterSeconds=0)
     yield
     if mongo:
         mongo.close()
@@ -535,6 +537,8 @@ def instance_view(d, names=None):
         'last_seen': iso(d.get('last_seen')),
         'version': d.get('version'), 'open_threads': d.get('open_threads'),
         'latency_ms': d.get('latency_ms'), 'uptime_seconds': d.get('uptime_seconds'),
+        'presence_status': d.get('presence_status', 'online'), 'activity_type': d.get('activity_type', 'watching'),
+        'activity_text': d.get('activity_text', ''),
     }
 
 
@@ -546,6 +550,56 @@ async def instances(request: Request):
     docs = await db.dashboard_instances.find({'kind': 'instance', 'guild_id': {'$in': ids}}).to_list(length=200)
     names = {g['id']: g['name'] for g in owned}
     return {'instances': [instance_view(d, names) for d in docs]}
+
+
+@app.post('/api/instance-control/{guild_id}')
+async def instance_control(guild_id: str, request: Request):
+    gid = check_gid(guild_id)
+    s = await session_for(request)
+    await require_access(s, gid)
+    body = await json_body(request)
+    action = str(body.get('action', '')).lower()
+    if action in ('start', 'stop', 'restart'):
+        inst = await instance_for(gid)
+        now = datetime.now(timezone.utc)
+        res = await db.dashboard_instance_commands.insert_one({
+            'guild_id': gid, 'bot_id': str(inst['bot_id']), 'action': action,
+            'status': 'pending', 'created_at': now, 'expires_at': now + timedelta(minutes=5),
+            'requested_by': {'id': s['user']['id'], 'username': s['user'].get('username')},
+        })
+        await db.dashboard_audit.insert_one({'guild_id': gid, 'action': action,
+            'requested_by': s['user']['id'], 'created_at': now})
+        return {'ok': True, 'command_id': str(res.inserted_id), 'status': 'pending'}
+    if action == 'presence':
+        status_name = str(body.get('status', 'online')).lower()
+        activity_type = str(body.get('activity_type', 'watching')).lower()
+        activity_text = body.get('activity_text', '')
+        if status_name not in ('online', 'idle', 'dnd', 'invisible'):
+            raise HTTPException(400, 'Status must be online, idle, dnd, or invisible.')
+        if activity_type not in ('playing', 'watching', 'listening', 'competing'):
+            raise HTTPException(400, 'Invalid activity type.')
+        if not isinstance(activity_text, str) or len(activity_text) > 128:
+            raise HTTPException(400, 'Activity text must be 0-128 characters.')
+        change_id, online = await enqueue(s, gid, 'presence', {
+            'status': status_name, 'activity_type': activity_type, 'activity_text': activity_text.strip()
+        })
+        return {'ok': True, 'change_id': change_id, 'bot_online': online}
+    raise HTTPException(400, 'Action must be start, stop, restart, or presence.')
+
+
+@app.get('/api/instance-control/{guild_id}/{command_id}')
+async def instance_control_status(guild_id: str, command_id: str, request: Request):
+    gid = check_gid(guild_id)
+    s = await session_for(request)
+    await require_access(s, gid)
+    try:
+        oid = ObjectId(command_id)
+    except (InvalidId, TypeError):
+        raise HTTPException(400, 'Invalid command ID.')
+    item = await db.dashboard_instance_commands.find_one({'_id': oid, 'guild_id': gid})
+    if not item:
+        raise HTTPException(404, 'Command not found.')
+    return {'status': item.get('status'), 'error': item.get('error')}
 
 
 @app.get('/api/status/{guild_id}')
