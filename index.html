@@ -96,7 +96,7 @@ input[type=color]{max-width:130px;height:44px;padding:4px}
 <div id="app" class="wrap hidden">
 
 <section class="view active" id="overview"><div class="head"><div><h1>Overview<span style="color:var(--purple)">.</span></h1><div class="sub">Manage your Modmail workspace.</div></div><button class="btn" id="chooseServer">Choose server</button></div>
-<div id="chooseHint" class="notice">Choose a server you own to continue.</div>
+<div id="chooseHint" class="notice">Choose a server you can manage to continue.</div>
 <div id="overviewBody" class="hidden">
 <div id="overviewWarn" class="notice warn hidden"></div>
 <div class="cards">
@@ -104,6 +104,7 @@ input[type=color]{max-width:130px;height:44px;padding:4px}
 <div class="card"><small>Staff members</small><div class="stat" id="stStaff">—</div><small>Across Admin, Moderator and Supporter levels</small></div>
 <div class="card"><small>Bot status</small><div class="stat" id="stBot" style="font-size:19px">—</div><small id="stBotMeta">&nbsp;</small></div>
 </div>
+<div class="panel" style="margin:18px 0"><h3>Instance controls</h3><p>Control only the Modmail bot assigned to this server.</p><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="instanceStart">Start</button><button class="btn danger" id="instanceStop">Stop</button><button class="btn" id="instanceRestart">Restart</button></div><hr style="border-color:var(--border);margin:16px 0"><h3>Bot presence</h3><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:end"><label>Status<br><select id="presenceStatus"><option value="online">Online</option><option value="idle">Idle</option><option value="dnd">Do Not Disturb</option><option value="invisible">Invisible</option></select></label><label>Activity type<br><select id="activityType"><option value="playing">Playing</option><option value="watching" selected>Watching</option><option value="listening">Listening</option><option value="competing">Competing</option></select></label><label style="flex:1;min-width:180px">Activity text<br><input id="activityText" maxlength="128" placeholder="12 open tickets"></label><button class="btn primary" id="savePresence">Save presence</button></div><small class="muted">Presence changes apply while the child bot is online.</small></div>
 <div class="panels">
 <div class="panel"><h3>General settings</h3><p>Prefix, typing, replies and alerts.</p><button class="btn primary jump" data-target="general">Configure →</button></div>
 <div class="panel"><h3>Ticket settings</h3><p>Categories, channels and thread behaviour.</p><button class="btn primary jump" data-target="tickets">Configure →</button></div>
@@ -203,6 +204,7 @@ async function loadOverview(){
   const warn=$("#overviewWarn");warn.classList.add("hidden");
   try{
     const s=await api("/api/status/"+selected.id);
+    $("#presenceStatus").value=s.presence_status||"online";$("#activityType").value=s.activity_type||"watching";$("#activityText").value=s.activity_text||"";
     $("#stThreads").textContent=s.open_threads??"—";
     $("#stStaff").textContent=s.staff_count??"—";
     const on=s.status==="online";
@@ -355,6 +357,9 @@ $("#saveSnippet").onclick=async()=>{
 };
 
 /* ---------- wiring ---------- */
+async function sendInstanceAction(action){if(!selected)return toast("Choose a server first.");if((action==="stop"||action==="restart")&&!confirm(action==="stop"?"Stop this server's Modmail bot?":"Restart this server's Modmail bot?"))return;try{const r=await api("/api/instance-control/"+selected.id,{method:"POST",body:JSON.stringify({action})});toast(action.charAt(0).toUpperCase()+action.slice(1)+" request queued.");for(let i=0;i<15;i++){await sleep(1000);const c=await api(`/api/instance-control/${selected.id}/${r.command_id}`);if(c.status==="applied"){toast("Instance "+action+" completed.");break}if(c.status==="failed")throw Error(c.error||"Host could not perform the action.")}loadOverview();loadInstances()}catch(e){toast(e.message)}}
+["start","stop","restart"].forEach(a=>$("#instance"+a.charAt(0).toUpperCase()+a.slice(1)).onclick=()=>sendInstanceAction(a));
+$("#savePresence").onclick=async()=>{if(!selected)return toast("Choose a server first.");try{const r=await api("/api/instance-control/"+selected.id,{method:"POST",body:JSON.stringify({action:"presence",status:$("#presenceStatus").value,activity_type:$("#activityType").value,activity_text:$("#activityText").value})});await track(r);toast("Presence settings saved.")}catch(e){toast(e.message)}};
 $("#refreshInstances").onclick=loadInstances;$("#refreshSnippets").onclick=loadSnippets;$("#refreshStaff").onclick=loadStaff;
 $("#loginBtn").onclick=()=>location.href=API+"/auth/login";
 $("#chooseServer").onclick=()=>page("servers");
