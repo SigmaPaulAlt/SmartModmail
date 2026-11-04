@@ -188,11 +188,11 @@ async function load(){
 function selectGuild(g){selected=g;sessionStorage.setItem("sm_guild",g.id);updateSelected();page("overview")}
 function renderGuilds(){
   const el=$("#guildList");el.replaceChildren();
-  if(!guilds.length){el.append(h("div",{class:"panel",style:"grid-column:1/-1;text-align:center;padding:30px"},h("h3",{text:"No manageable servers found"}),h("p",{class:"muted",text:"No registered Modmail servers are available to this Discord account. Ask a bot Owner to add your user ID to the Modmail OWNER permission level."})));return}
+  if(!guilds.length){el.append(h("div",{class:"panel",style:"grid-column:1/-1;text-align:center;padding:30px"},h("h3",{text:"No manageable servers found"}),h("p",{class:"muted",text:"No registered Modmail servers are available to this Discord account. You need Discord Administrator permission or Modmail OWNER (level 5) access."})));return}
   guilds.forEach(g=>{
     const icon=h("div",{class:"guildicon"});
     if(g.icon)icon.append(h("img",{src:`https://cdn.discordapp.com/icons/${encodeURIComponent(g.id)}/${encodeURIComponent(g.icon)}.png?size=96`,alt:""}));else icon.textContent=(g.name||"?").slice(0,1).toUpperCase();
-    el.append(h("button",{class:"guild",onclick:()=>selectGuild(g)},icon,h("div",{},h("b",{text:g.name}),h("small",{text:(g.access_source==="modmail_owner"?"Modmail Owner · Select":"Server owner · Select")}))));
+    el.append(h("button",{class:"guild",onclick:()=>selectGuild(g)},icon,h("div",{},h("b",{text:g.name}),h("small",{text:(g.access_source==="modmail_owner"?"Modmail Owner · Select":g.access_source==="discord_administrator"?"Discord Administrator · Select":"Server owner · Select")}))));
   });
 }
 function updateSelected(){const yes=!!selected;$("#chooseHint").classList.toggle("hidden",yes);$("#overviewBody").classList.toggle("hidden",!yes);$("#chooseServer").textContent=yes?selected.name+" ▾":"Choose server"}
